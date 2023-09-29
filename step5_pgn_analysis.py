@@ -91,7 +91,7 @@ if __name__ == "__main__":
         game = chess.pgn.read_game(pgn_file)
         while game != None:
             i += 1
-            print(f"Analysis of Game #{i}:")
+            print(f'Analysis of Game #{i}, {game.headers["White"]} vs {game.headers["Black"]}, {game.headers["Result"]}:')
             accuracies, wins = calculate_accuracy(game, stockfish_path)
             accuracy_white, accuracy_black = game_accuracy( wins, accuracies)
     
