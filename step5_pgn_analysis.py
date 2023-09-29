@@ -6,6 +6,21 @@ import chess.engine
 import math
 import statistics
 from math import exp
+import re
+
+def extract_time_control(time_control_str):
+    match = re.search(r"(\d+)\+(\d+)", time_control_str)
+    if match:
+        total = int(match.group(1))
+        inc = int(match.group(2))
+    else:
+        match = re.search(r"(\d+)", time_control_str)
+        if match:
+            total = int(match.group(1))
+            inc = 0
+        else:
+            raise Exception(f'unrecognized time control {time_control_str}')
+    return total, inc
 
 # Function to convert Centipawn to Winning chances (lichess algorithm)
 def winning_chances(cp):
@@ -23,6 +38,12 @@ def wp_to_accuracy( delta_wp ):
 # take game and engine, return wps, and accuracies
 def calculate_accuracy(game, engine):
     board = game.board() # assume standard game
+
+    total, inc = extract_time_control( game.headers["TimeControl"] )
+    if inc == None:
+        inc = 0
+
+    print (f'Time control: {total}+{inc}')
     # initial analysis of initial board
     info = engine.analyse(board, chess.engine.Limit(depth=20))
 
@@ -37,10 +58,14 @@ def calculate_accuracy(game, engine):
     white_wp_before = 50 + 50 * winning_chances(white_cp_before)
     white_wp_after = None
 
-    print(f"  move white    black      eval (accuracy%)")
+    white_clk = total
+    black_clk = total
+
+    print(f"  move white    black      eval (accuracy%) time")
 
     for move in game.mainline_moves():
         # now move
+        game = game.next()
         n = board.fullmove_number
         san = board.san(move)
         board.push(move)
@@ -48,17 +73,21 @@ def calculate_accuracy(game, engine):
         white_cp_after = max(min(info["score"].white().score(mate_score=10000),1500),-1500)
         white_wp_after = 50 + 50 * winning_chances(white_cp_after)
         wps.append(white_wp_after)
-        #clk = game.comment
+        clk = game.clock()
 
         # calculate after
         if turn == chess.WHITE:
+            white_time_spend = white_clk - clk + inc
+            white_clk = clk
             accuracy = wp_to_accuracy( white_wp_before - white_wp_after )
             accuracies.append( accuracy )
-            print(f"  {n:4d} {san:8s}          {white_cp_after/100.0:6.2f} ({accuracy:.2f})")
+            print(f"  {n:4d} {san:8s}          {white_cp_after/100.0:6.2f} ({accuracy:11.2f}) {white_time_spend:6.1f}")
         else:
+            black_time_spend = black_clk - clk + inc
+            black_clk = clk
             accuracy = wp_to_accuracy( white_wp_after - white_wp_before )
             accuracies.append( accuracy )
-            print(f"  {n:4d} ..       {san:8s} {white_cp_after/100.0:6.2f} ({accuracy:.2f})")
+            print(f"  {n:4d} ..       {san:8s} {white_cp_after/100.0:6.2f} ({accuracy:11.2f}) {black_time_spend:6.1f}")
         turn = not turn
         white_cp_before = white_cp_after
         white_wp_before = white_wp_after
