@@ -7,27 +7,35 @@ import math
 import statistics
 from math import exp
 
+# Function to convert Centipawn to Winning chances (lichess algorithm)
 def winning_chances(cp):
     MULTIPLIER = -0.00368208
     v = 2 / (1 + exp(MULTIPLIER * cp)) - 1
     return max(-1, min(1, v))
 
-# Function to calculate average centipawn loss
-def calculate_accuracy(game, stockfish_path):
+# Function to calculate accuracy from Winning Percentage difference (lichess algorithm)
+def wp_to_accuracy( delta_wp ):
+    accuracy = 103.1668100711649 * exp(-0.04354415386753951 * delta_wp) - 3.166924740191411 + 1 # bonus 1
+    accuracy = min(100, max( 0, accuracy))
+    return accuracy
+    
+# Function to calculate winning percentages (wps) and accuracies for each move of a game
+# take game and engine, return wps, and accuracies
+def calculate_accuracy(game, engine):
     board = game.board() # assume standard game
-    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     # initial analysis of initial board
     info = engine.analyse(board, chess.engine.Limit(depth=20))
 
     accuracies = []
-    wins = [0]
+    wps = []
+    
     turn = chess.WHITE
 
     white_cp_before = max(min(info["score"].white().score(mate_score=10000),1500),-1500)
     white_cp_after = None
 
-    white_win_before = 50 + 50 * winning_chances(white_cp_before)
-    white_win_after = None
+    white_wp_before = 50 + 50 * winning_chances(white_cp_before)
+    white_wp_after = None
 
     print(f"  move white    black      eval (accuracy%)")
 
@@ -38,33 +46,31 @@ def calculate_accuracy(game, stockfish_path):
         board.push(move)
         info = engine.analyse(board, chess.engine.Limit(depth=20))
         white_cp_after = max(min(info["score"].white().score(mate_score=10000),1500),-1500)
-        white_win_after = 50 + 50 * winning_chances(white_cp_after)
-        wins.append(white_win_after)
-        clk = game.comment
+        white_wp_after = 50 + 50 * winning_chances(white_cp_after)
+        wps.append(white_wp_after)
+        #clk = game.comment
 
         # calculate after
         if turn == chess.WHITE:
-            accuracy = 103.1668100711649 * exp(-0.04354415386753951 * ( white_win_before - white_win_after )) - 3.166924740191411 + 1
-            accuracy = min(100, max( 0, accuracy))
+            accuracy = wp_to_accuracy( white_wp_before - white_wp_after )
             accuracies.append( accuracy )
-            print(f"  {n:4d} {san:8s}          {white_cp_after/100.0:6.2f} ({accuracy:.2f}) {clk}")
+            print(f"  {n:4d} {san:8s}          {white_cp_after/100.0:6.2f} ({accuracy:.2f})")
         else:
-            accuracy = 103.1668100711649 * exp(-0.04354415386753951 * ( white_win_after - white_win_before )) - 3.166924740191411 + 1
-            accuracy = min(100, max( 0, accuracy))
+            accuracy = wp_to_accuracy( white_wp_after - white_wp_before )
             accuracies.append( accuracy )
-            print(f"  {n:4d} ..       {san:8s} {white_cp_after/100.0:6.2f} ({accuracy:.2f}) {clk}")
+            print(f"  {n:4d} ..       {san:8s} {white_cp_after/100.0:6.2f} ({accuracy:.2f})")
         turn = not turn
         white_cp_before = white_cp_after
-        white_win_before = white_win_after
+        white_wp_before = white_wp_after
 
-    engine.quit()
 
-    return accuracies, wins
+    return accuracies, wps
 
-def game_accuracy( wins, accuracies ):
+# Calculate overall accuracies for white and black of the whole game
+def game_accuracy( wps, accuracies ):
     # Calculate weighted mean
     window_size = max(2, min(8, len(accuracies) // 10))
-    windows = [wins[:window_size]] + [wins[i:i + window_size] for i in range(1, len(wins) - window_size + 1)]
+    windows = [wps[:window_size]] + [wps[i:i + window_size] for i in range(1, len(wps) - window_size + 1)]
     weights = [max(0.5, min(12, statistics.stdev(window))) for window in windows]
 
     weighted_accuracies = [(acc, weights[i // 2]) for i, acc in enumerate(accuracies)]
@@ -86,17 +92,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     pgn_path = args.input
 
+    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     i = 0
     with open(pgn_path, 'r') as pgn_file:
         game = chess.pgn.read_game(pgn_file)
         while game != None:
             i += 1
             print(f'Analysis of Game #{i}, {game.headers["White"]} vs {game.headers["Black"]}, {game.headers["Result"]}:')
-            accuracies, wins = calculate_accuracy(game, stockfish_path)
-            accuracy_white, accuracy_black = game_accuracy( wins, accuracies)
+            accuracies, wps = calculate_accuracy(game, engine)
+            accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
     
             print(f' Accuracy for White ({game.headers["White"]}): {accuracy_white:.2f}%')
             print(f' Accuracy for Black ({game.headers["Black"]}): {accuracy_black:.2f}%')
             game = chess.pgn.read_game(pgn_file)
     
+    engine.quit()
 
