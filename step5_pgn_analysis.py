@@ -3,10 +3,59 @@
 import argparse
 import chess.pgn
 import chess.engine
+import chess.svg
 import math
 import statistics
 from math import exp
 import re
+
+
+class MoveEvaluation:
+    def __init__(self):
+        self.mn = None                    #move number
+        self.san = None                   #move in SAN
+        self.side = None                  #side of move, either white/True or black/False
+        self.weval = None                 #eval in white
+        self.eval = None                  #eval in POV
+        self.delta = None                 #change in eval in POV
+        self.accuracy = None              #accuracy
+        self.time = None                  #time spent on this move
+        self.mistake = False
+        self.blunder = False
+        self.inaccurate = False
+        self.fen = None                   #FEN at this move
+        self.svg = None                   #SVG of the board when necessary
+
+    def grade_move(self, board, move):
+        #blunder is a move that make you lose or make you lose huge chance to win.
+        # thus, we assume the delta should <= -5, and the final eval is <=5 and >=-10
+        if self.delta <= -5 and self.eval <=5 and self.eval >= -10:
+            self.blunder = True
+        elif self.delta <= -5:
+            self.mistake = True
+        #mistake is a move that is with delta <=-2
+        elif self.delta <= -2:
+            self.mistake = True
+        elif self.delta <= -1:
+            self.inaccurate = True
+
+        if self.blunder:
+            self.fen = board.fen()
+            self.svg = chess.svg.board( board, lastmove = move, size=350)
+        return
+
+    def __str__ (self):
+        if self.mistake:
+            grade = "mistake"
+        elif self.blunder:
+            grade = "blunder"
+        elif self.inaccurate:
+            grade = "inaccurate"
+        else:
+            grade = "fair"
+        s = "%3d\t%7s\t%7s\t%6.1f\t%6.1f\t%4.1f\t%d\t%s\t%s" % (self.mn, self.san if self.side else "..", ".." if self.side else self.san, self.weval, self.delta, self.accuracy, self.time, grade, self.fen if self.fen!=None else "")
+        return s
+        
 
 def extract_time_control(time_control_str):
     match = re.search(r"(\d+)\+(\d+)", time_control_str)
@@ -43,10 +92,10 @@ def calculate_accuracy(game, engine):
     if inc == None:
         inc = 0
 
-    print (f'Time control: {total}+{inc}')
     # initial analysis of initial board
     info = engine.analyse(board, chess.engine.Limit(depth=20))
 
+    move_evals = []
     accuracies = []
     wps = []
     
@@ -60,40 +109,49 @@ def calculate_accuracy(game, engine):
 
     white_clk = total
     black_clk = total
-
-    print(f"  move white    black      eval (accuracy%) time")
-
+    
+    result = []
+    
     for move in game.mainline_moves():
+        move_eval = MoveEvaluation()
         # now move
         game = game.next()
-        n = board.fullmove_number
-        san = board.san(move)
+        move_eval.mn = board.fullmove_number
+        move_eval.san = board.san(move)
+        move_eval.side = turn
+        
         board.push(move)
         info = engine.analyse(board, chess.engine.Limit(depth=20))
         white_cp_after = max(min(info["score"].white().score(mate_score=10000),1500),-1500)
+        move_eval.weval = white_cp_after/100.0
         white_wp_after = 50 + 50 * winning_chances(white_cp_after)
         wps.append(white_wp_after)
         clk = game.clock()
 
         # calculate after
         if turn == chess.WHITE:
-            white_time_spend = white_clk - clk + inc
+            move_eval.time = white_clk - clk + inc
             white_clk = clk
-            accuracy = wp_to_accuracy( white_wp_before - white_wp_after )
-            accuracies.append( accuracy )
-            print(f"  {n:4d} {san:8s}          {white_cp_after/100.0:6.2f} ({accuracy:11.2f}) {white_time_spend:6.1f}")
+            move_eval.accuracy = wp_to_accuracy( white_wp_before - white_wp_after )
+            accuracies.append( move_eval.accuracy )
+            move_eval.eval = move_eval.weval
+            move_eval.delta = (white_cp_after-white_cp_before)/100.0
         else:
-            black_time_spend = black_clk - clk + inc
+            move_eval.time = black_clk - clk + inc
             black_clk = clk
-            accuracy = wp_to_accuracy( white_wp_after - white_wp_before )
-            accuracies.append( accuracy )
-            print(f"  {n:4d} ..       {san:8s} {white_cp_after/100.0:6.2f} ({accuracy:11.2f}) {black_time_spend:6.1f}")
+            move_eval.accuracy = wp_to_accuracy( white_wp_after - white_wp_before )
+            accuracies.append( move_eval.accuracy )
+            move_eval.eval = -1 * move_eval.weval
+            move_eval.delta = (white_cp_before-white_cp_after)/100.0
+
+        move_eval.grade_move( board, move )
+        move_evals.append( move_eval )
         turn = not turn
         white_cp_before = white_cp_after
         white_wp_before = white_wp_after
 
 
-    return accuracies, wps
+    return move_evals, accuracies, wps
 
 # Calculate overall accuracies for white and black of the whole game
 def game_accuracy( wps, accuracies ):
@@ -123,14 +181,26 @@ if __name__ == "__main__":
 
     engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     i = 0
+    svg_n = 0
     with open(pgn_path, 'r') as pgn_file:
         game = chess.pgn.read_game(pgn_file)
         while game != None:
+            move_evals, accuracies, wps = calculate_accuracy(game, engine)
+            if len(move_evals) < 10:      #skip short games
+                continue
+            accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
             i += 1
             print(f'Analysis of Game #{i}, {game.headers["White"]} vs {game.headers["Black"]}, {game.headers["Result"]}:')
-            accuracies, wps = calculate_accuracy(game, engine)
-            accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
-    
+            print(f' Time Control:{game.headers["TimeControl"]}')
+            print(f"  move\t  white\t  black\t  eval\t delta\taccu\ttime\tgrade\tfen\tsvg#")
+            for move_eval in move_evals:
+                s = "  "+str(move_eval)
+                if move_eval.svg != None:
+                    svg_n += 1
+                    s +=f"\t{svg_n}"
+                    with open(f"svg_{svg_n}.svg","w") as f:
+                        f.write(move_eval.svg)
+                print( s )
             print(f' Accuracy for White ({game.headers["White"]}): {accuracy_white:.2f}%')
             print(f' Accuracy for Black ({game.headers["Black"]}): {accuracy_black:.2f}%')
             game = chess.pgn.read_game(pgn_file)
