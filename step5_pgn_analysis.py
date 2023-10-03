@@ -18,42 +18,38 @@ class MoveEvaluation:
         self.weval = None                 #eval in white
         self.eval = None                  #eval in POV
         self.delta = None                 #change in eval in POV
+        self.wwp = None                   #white win percentage
+        self.wp = None                    #win percentage in POV
+        self.wp_delta = None              #win percentage change
         self.accuracy = None              #accuracy
         self.time = None                  #time spent on this move
-        self.mistake = False
+        self.grade = None                 #best, good, inaccurate, mistake, blunder
         self.blunder = False
-        self.inaccurate = False
         self.fen = None                   #FEN at this move
         self.svg = None                   #SVG of the board when necessary
 
     def grade_move(self, board, move):
         #blunder is a move that make you lose or make you lose huge chance to win.
         # thus, we assume the delta should <= -5, and the final eval is <=5 and >=-10
-        if self.delta <= -5 and self.eval <=5 and self.eval >= -10:
+        if self.accuracy < 20:
             self.blunder = True
-        elif self.delta <= -5:
-            self.mistake = True
-        #mistake is a move that is with delta <=-2
-        elif self.delta <= -2:
-            self.mistake = True
-        elif self.delta <= -1:
-            self.inaccurate = True
+            self.grade = "blunder"
+        elif self.accuracy < 50:
+            self.grade = "mistake"
+        elif self.accuracy < 80:
+            self.grade = "inaccurate"
+        elif self.accuracy < 98:
+            self.grade = "good"
+        else:
+            self.grade = "best"
 
         if self.blunder:
-            self.fen = board.fen()
+            self.fen = "\""+board.fen()+"\""
             self.svg = chess.svg.board( board, lastmove = move, size=350)
         return
 
     def __str__ (self):
-        if self.mistake:
-            grade = "mistake"
-        elif self.blunder:
-            grade = "blunder"
-        elif self.inaccurate:
-            grade = "inaccurate"
-        else:
-            grade = "fair"
-        s = "%3d\t%7s\t%7s\t%6.1f\t%6.1f\t%4.1f\t%d\t%s\t%s" % (self.mn, self.san if self.side else "..", ".." if self.side else self.san, self.weval, self.delta, self.accuracy, self.time, grade, self.fen if self.fen!=None else "")
+        s = "%3d\t%7s\t%7s\t%6.1f\t%6.1f\t%4.1f\t%8.1f\t%d\t%10s\t%s" % (self.mn, self.san if self.side else "..", ".." if self.side else self.san, self.weval, self.delta, self.wwp, self.accuracy, self.time, self.grade, self.fen if self.fen!=None else "")
         return s
         
 
@@ -85,7 +81,9 @@ def wp_to_accuracy( delta_wp ):
     
 # Function to calculate winning percentages (wps) and accuracies for each move of a game
 # take game and engine, return wps, and accuracies
-def calculate_accuracy(game, engine):
+def calculate_accuracy(game, stockfish_path):
+    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+
     board = game.board() # assume standard game
 
     total, inc = extract_time_control( game.headers["TimeControl"] )
@@ -125,6 +123,7 @@ def calculate_accuracy(game, engine):
         white_cp_after = max(min(info["score"].white().score(mate_score=10000),1500),-1500)
         move_eval.weval = white_cp_after/100.0
         white_wp_after = 50 + 50 * winning_chances(white_cp_after)
+        move_eval.wwp = white_wp_after
         wps.append(white_wp_after)
         clk = game.clock()
 
@@ -135,14 +134,18 @@ def calculate_accuracy(game, engine):
             move_eval.accuracy = wp_to_accuracy( white_wp_before - white_wp_after )
             accuracies.append( move_eval.accuracy )
             move_eval.eval = move_eval.weval
+            move_eval.wp = move_eval.wwp
             move_eval.delta = (white_cp_after-white_cp_before)/100.0
+            move_eval.wp_delta = white_wp_after - white_wp_before            
         else:
             move_eval.time = black_clk - clk + inc
             black_clk = clk
             move_eval.accuracy = wp_to_accuracy( white_wp_after - white_wp_before )
             accuracies.append( move_eval.accuracy )
             move_eval.eval = -1 * move_eval.weval
+            move_eval.wp = 100 - move_eval.wwp
             move_eval.delta = (white_cp_before-white_cp_after)/100.0
+            move_eval.wp_delta = white_wp_before - white_wp_after
 
         move_eval.grade_move( board, move )
         move_evals.append( move_eval )
@@ -150,7 +153,7 @@ def calculate_accuracy(game, engine):
         white_cp_before = white_cp_after
         white_wp_before = white_wp_after
 
-
+    engine.quit()
     return move_evals, accuracies, wps
 
 # Calculate overall accuracies for white and black of the whole game
@@ -179,20 +182,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     pgn_path = args.input
 
-    engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     i = 0
     svg_n = 0
     with open(pgn_path, 'r') as pgn_file:
         game = chess.pgn.read_game(pgn_file)
         while game != None:
-            move_evals, accuracies, wps = calculate_accuracy(game, engine)
+            move_evals, accuracies, wps = calculate_accuracy(game, stockfish_path)
             if len(move_evals) < 10:      #skip short games
                 continue
-            accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
             i += 1
             print(f'Analysis of Game #{i}, {game.headers["White"]} vs {game.headers["Black"]}, {game.headers["Result"]}:')
             print(f' Time Control:{game.headers["TimeControl"]}')
-            print(f"  move\t  white\t  black\t  eval\t delta\taccu\ttime\tgrade\tfen\tsvg#")
+            accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
+            print(f"  move\t  white\t  black\t  eval\t delta\twwp\taccuracy\ttime\tgrade     \tfen\tsvg#")
             for move_eval in move_evals:
                 s = "  "+str(move_eval)
                 if move_eval.svg != None:
@@ -205,5 +207,4 @@ if __name__ == "__main__":
             print(f' Accuracy for Black ({game.headers["Black"]}): {accuracy_black:.2f}%')
             game = chess.pgn.read_game(pgn_file)
     
-    engine.quit()
 
