@@ -23,23 +23,36 @@ class MoveEvaluation:
         self.wp_delta = None              #win percentage change
         self.accuracy = None              #accuracy
         self.time = None                  #time spent on this move
-        self.grade = None                 #best, good, inaccurate, mistake, blunder
+        self.grade = None                 #best, excellent, good, inaccuracy, mistake, blunder
         self.blunder = False
         self.fen = None                   #FEN at this move
         self.svg = None                   #SVG of the board when necessary
 
     def grade_move(self, board, move):
-        #blunder is a move that make you lose or make you lose huge chance to win.
-        # thus, we assume the delta should <= -5, and the final eval is <=5 and >=-10
-        if self.accuracy < 20:
+        # grade move according to accuracy
+        # |100
+        # | best
+        # |95
+        # | excellent
+        # |90
+        # | good
+        # |80
+        # | inaccuracy
+        # |50
+        # | mistake
+        # |25
+        # | blunder
+        if self.accuracy < 25:
             self.blunder = True
             self.grade = "blunder"
         elif self.accuracy < 50:
             self.grade = "mistake"
         elif self.accuracy < 80:
-            self.grade = "inaccurate"
-        elif self.accuracy < 98:
+            self.grade = "inaccuracy"
+        elif self.accuracy < 90:
             self.grade = "good"
+        elif self.accuracy < 95:
+            self.grade = "excellent"
         else:
             self.grade = "best"
 
@@ -194,7 +207,7 @@ if __name__ == "__main__":
             print(f'Analysis of Game #{i}, {game.headers["White"]} vs {game.headers["Black"]}, {game.headers["Result"]}:')
             print(f' Time Control:{game.headers["TimeControl"]}')
             accuracy_white, accuracy_black = game_accuracy( wps, accuracies)
-            print(f"  move\t  white\t  black\t  eval\t delta\twwp\taccuracy\ttime\tgrade     \tfen\tsvg#")
+            print(f"  move\t  white\t  black\t  eval\t delta\twwp\taccuracy\ttime\t     grade\tfen\tsvg#")
             for move_eval in move_evals:
                 s = "  "+str(move_eval)
                 if move_eval.svg != None:
